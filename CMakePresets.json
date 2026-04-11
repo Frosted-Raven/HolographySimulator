@@ -1,0 +1,44 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 21,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "conf-common",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build_${presetName}",
+            "installDir": "${sourceDir}/build_${presetName}"
+        },
+        {
+            "name": "conf-unixlike-common",
+            "hidden": true,
+            "inherits": "conf-common"
+        },
+        {
+            "name": "clang-17",
+            "displayName": "clang-17 release",
+            "description": "clang-17 release",
+            "inherits": "conf-unixlike-common",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "/usr/lib/llvm-17/bin/clang",
+                "CMAKE_CXX_COMPILER": "/usr/lib/llvm-17/bin/clang++",
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+            }
+        },
+        {
+            "name": "clang-18",
+            "displayName": "clang-18 release",
+            "description": "clang-18 release",
+            "inherits": "conf-unixlike-common",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang-18",
+                "CMAKE_CXX_COMPILER": "clang++-18",
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+            }
+        }
+    ]
+}
