@@ -4,28 +4,26 @@
 #include <space/utility/spacial_nav.hpp>
 #include <lager/effect.hpp>
 
-#include <functional>
+#include <optional>
 #include <variant>
 #include <vector>
-//seperate shapes that objects can have
+
 namespace space::object::shapes{
 
-    struct shape_model{
+    struct sphere_model{
         utility::point3 world_position;
-        virtual utility::sdf generate(double cell_size);
-    };
-
-    struct sphere_model : public shape_model{
         double scale;
-        utility::sdf generate(double cell_size) override;
+        utility::sdf generate(double cell_size) const;
     };
 
-    struct cube_model : public shape_model{
+    struct cube_model{
+        utility::point3 world_position;
         utility::vector3 scale;
         utility::vector3 rotation;
-
-        utility::sdf generate(double cell_size) override;
+        utility::sdf generate(double cell_size) const;
     };
+
+    using shape_model = std::variant<sphere_model, cube_model>;
 
     namespace action{
         struct new_sphere{

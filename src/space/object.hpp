@@ -16,13 +16,13 @@ namespace space::object{
         std::string name;
 
         double cell_s;
-        descriptor::position world_space;
-        descriptor::cell_quantity amount;
+        utility::point3 world_space;
+        utility::cell_quantity amount;
 
         medium::medium_model medium;
 
         immer::vector<double> distances;
-        immer::vector<descriptor::vec_position> normals;
+        immer::vector<utility::vector3> normals;
     };
 
     namespace actions{

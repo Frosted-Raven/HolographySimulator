@@ -35,6 +35,7 @@ namespace space::medium{
             double new_density;
             double new_absorption;
             double new_temperature;
+            double new_stiffness;
 
             bool new_rigid;
         };
@@ -45,7 +46,7 @@ namespace space::medium{
 
         struct priority{
             std::uint8_t new_priority;
-        }
+        };
 
         struct density{
             double new_density;
@@ -74,7 +75,8 @@ namespace space::medium{
                                  action::density,
                                  action::absorption,
                                  action::temperature,
-                                 action::stiffness>;
+                                 action::stiffness,
+                                 action::rigid>;
 
     double speed_calc(double stiffness, double density);
     double impedance_calc(double density, double speed);
