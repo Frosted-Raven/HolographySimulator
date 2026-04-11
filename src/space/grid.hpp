@@ -12,12 +12,11 @@ namespace space::grid{
 
     struct voxel{
         int i, j, k;
-        std_optional<medium::medium_model> medium;
-
-    }
+        std::optional<medium::medium_model> medium;
+    };
 
     struct grid_data{
-        std::vector<int> origin = {0, 0, 0}
+        std::vector<int> origin = {0, 0, 0};
 
         double single_axis_d;
         int cell_size;

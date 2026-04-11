@@ -28,11 +28,11 @@ namespace space::medium{
         return 1-reflection_coefficient(mat_z, med_z);
     }
 
-    medium_model update(medium_model m, action a){
+    medium_model update(medium_model m, actions a){
         return lager::match(std::move(a))(
             [&](action::medium a){
                 m.name = a.new_name;
-                m.priority = a.new_priority;
+                m.priority = a.priority;
 
                 m.density = a.new_density;
                 m.absorption = a.new_absorption;
@@ -74,6 +74,7 @@ namespace space::medium{
             },
             [&](action::rigid a){
                 m.is_rigid = a.new_rigid;
+                return m;
             });
     }
 }

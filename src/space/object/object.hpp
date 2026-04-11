@@ -16,6 +16,5 @@ namespace space::object{
         shapes::shape_model shape;
         medium::medium_model medium;
         utility::sdf sdf_model;
-
     };
 }
