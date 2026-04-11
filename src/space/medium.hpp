@@ -45,7 +45,7 @@ namespace space::medium{
 
         struct priority{
             std::uint8_t new_priority;
-        }
+        };
 
         struct density{
             double new_density;

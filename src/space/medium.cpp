@@ -1,4 +1,4 @@
-#include "medium.h"
+#include "medium.hpp"
 
 #include <lager/context.hpp>
 #include <lager/util.hpp>

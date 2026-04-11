@@ -25,7 +25,7 @@ namespace space::objects::shapes{
 
         utility::sdf sdf_data;
         sdf_data.origin = origin;
-        sdf_data.dimensions = utility::point3{diamater, diamater, diamater}
+        sdf_data.dimensions = utility::point3{diamater, diamater, diamater};
 
         for(int i = 0; i < cell_count; i++){
             for(int j = 0; j < cell_count; j++){

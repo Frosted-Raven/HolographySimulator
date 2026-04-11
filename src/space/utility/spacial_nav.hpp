@@ -2,7 +2,7 @@
 
 #include <cstdint>
 #include <vector>
-namespace space::descriptor{
+namespace space::utility{
     struct point3{
         double x;
         double y;
