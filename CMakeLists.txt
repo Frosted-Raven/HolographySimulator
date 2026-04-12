@@ -6,7 +6,18 @@ project(
   LANGUAGES CXX
   )
 
-include(cmake/CPM.cmake)
+set(CPM_DOWNLOAD_VERSION 0.40.2)
+set(CPM_DOWNLOAD_LOCATION "${CMAKE_BINARY_DIR}/cmake/CPM_${CPM_DOWNLOAD_VERSION}.cmake")
+
+if(NOT EXISTS ${CPM_DOWNLOAD_LOCATION})
+  message(STATUS "Downloading CPM.cmake to ${CPM_DOWNLOAD_LOCATION}")
+  file(DOWNLOAD
+    "https://github.com/cpm-cmake/CPM.cmake/releases/download/v${CPM_DOWNLOAD_VERSION}/CPM.cmake"
+    ${CPM_DOWNLOAD_LOCATION}
+  )
+endif()
+
+include(${CPM_DOWNLOAD_LOCATION})
 
 CPMAddPackage("gh:intel/cicd-repo-infrastructure#3e2bef0")
 
@@ -58,7 +69,10 @@ add_versioned_package(
 add_executable(holo
   src/main.cpp
   src/space/medium.cpp
+  src/space/utility/spacial_nav.cpp
   src/space/object/object_descriptor.cpp
+  src/space/object/object.cpp
+  src/space/grid.cpp
 )
 
 target_include_directories(holo

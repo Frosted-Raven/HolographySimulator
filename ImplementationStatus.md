@@ -1,82 +1,147 @@
 # Acoustic Holography Engine — Implementation Status
 
-## Files Implemented
+## Actual File Structure
 
-The actual source lives under `src/space/`, not the planned `src/model/`. Only 5 files exist:
+```
+src/
+├── main.cpp                               # Empty stub
+└── space/
+    ├── medium.hpp / medium.cpp            # Complete
+    ├── grid.hpp                           # Skeleton only
+    ├── object.hpp                         # Stale — superseded, should be removed
+    ├── object/
+    │   ├── object.hpp                     # Object model struct (no actions/reducer yet)
+    │   └── object_descriptor.hpp / .cpp   # Shape SDF generation + shape reducer — Complete
+    └── utility/
+        └── spacial_nav.hpp               # Coordinate types + sdf struct — Complete
+```
 
-| File | Status |
-|---|---|
-| `src/space/medium.hpp` + `medium.cpp` | Implemented |
-| `src/space/grid.hpp` | Partial skeleton |
-| `src/space/object.hpp` | Early skeleton |
-| `src/space/utility/spacial_nav.hpp` | Implemented (not in original design) |
-
-Everything else — `space.hpp`, `transducer.hpp`, `transducer_array.hpp`, `pressure_field.hpp`, `simulation_state.hpp`, `simulation_model.hpp`, `sdf.hpp`, `coords/`, `physics/`, `gui/`, `io/` — does not exist yet.
+Everything else — `space.hpp`, `transducer.hpp`, `transducer_array.hpp`, `pressure_field.hpp`,
+`simulation_state.hpp`, `simulation_model.hpp`, `coords/`, `physics/`, `gui/` — does not exist yet.
 
 ---
 
 ## Component Detail
 
-### `medium` — Most Complete
+### `medium` — Complete
 
-The `medium_model` struct and its full action/reducer pattern are implemented. `lager::match` dispatches over the `actions` variant for all property changes. Derived quantities (`sound_speed`, `acoustic_impedance`) are recomputed inside the relevant action handlers whenever their dependencies change.
+Full action/reducer pattern implemented. `lager::match` dispatches over the `actions` variant
+for all property changes. `sound_speed` and `acoustic_impedance` are recomputed inside the
+relevant action handlers when their dependencies change.
 
-**Additions vs. design:**
-- `name: std::string` — not in the design doc; useful for future presets
-- `stiffness: double` — new physical property; used to derive `sound_speed` via `sqrt(stiffness / density)` (bulk modulus formula)
-- `acoustic_impedance` is **stored** as a field rather than being a derived free function
-
-**Structural divergence — how speed is handled:**
-The design says `speed_of_sound` is *"stored explicitly, not derived, to support non-air media."* The implementation does the opposite: speed is always derived from `stiffness` and `density`. These are conflicting philosophies. Setting air's speed directly (e.g. 343 m/s) requires back-calculating a stiffness value under the current approach.
-
-**`acoustic_impedance` storage:**
-The design intended `acoustic_impedance(medium)` as a free function computed on demand (`ρ × c`). The implementation stores it as a field and keeps it in sync by recomputing it inside the `density` and `stiffness` action handlers.
+**Structural divergences from design:**
+- `stiffness: double` added as an explicit field; `sound_speed` is always derived via
+  `sqrt(stiffness / density)` rather than being stored directly
+- `acoustic_impedance` is stored as a field and kept in sync, rather than being a free
+  function computed on demand
 
 ---
 
-### `grid` — Skeleton
+### `utility/spacial_nav.hpp` — Complete
 
-The `grid_data` struct exists with the core fields and the `immer::flex_vector<voxel>`. The `voxel` struct is defined inline here rather than in a separate `voxel.hpp`.
+Defines shared coordinate types and the `sdf` struct under `space::utility`.
 
-**Structural divergences vs. design:**
+```cpp
+namespace space::utility {
+    struct point3      { double x, y, z; };      // world-space position
+    struct vector3     { double i, j, k; };       // vectors and normals
+    struct cell_quantity { uint16_t x, y, z; };  // grid cell counts
+
+    struct sdf {
+        std::vector<double>  distance;
+        std::vector<vector3> normal;
+        point3 origin;
+        point3 dimensions;
+    };
+}
+```
+
+**Divergences from design:**
+- Namespace is `space::utility`, not `space::descriptor` as the context doc specifies
+- Types are named `point3`/`vector3`, not `position`/`vec_position`
+- `sdf` lives here rather than in a dedicated `sdf.hpp`
+- `sdf::dimensions` is `point3` rather than `vec_position`
+
+---
+
+### `object/object_descriptor.hpp/.cpp` — Complete
+
+Defines and implements the shape model layer. Fully implemented.
+
+**Types:**
+- `space::object::shapes::sphere_model` — `world_position`, `scale` (= radius)
+- `space::object::shapes::cube_model` — `world_position`, `scale` (vector3), `rotation` (vector3)
+- `using shape_model = std::variant<sphere_model, cube_model>`
+
+**`sphere_model::generate(cell_size)`** — builds bounding cube, iterates cells, computes
+signed distance `|cell_center - center| - radius` and normalised outward normal analytically.
+
+**`cube_model::generate(cell_size)`** — builds bounding box, iterates cells, uses standard
+box SDF formula (`q = |local| - dims/2`, exterior/interior distance combined), computes
+axis-aligned face normals.
+
+**`update(shape_model, actions)` reducer** — `lager::match` over 5 action types:
+`new_sphere`, `new_cube`, `edit_position`, `edit_sphere`, `edit_cube`.
+
+**Divergences from design:**
+- Shape type is `cube_model`, not `box_model`
+- `cube_model` includes `rotation: vector3` — design deferred rotation
+- `sphere_model::scale` is the radius (same as design intent)
+
+---
+
+### `object/object.hpp` — Struct only, no actions or reducer
+
+The current `object_model`:
+
+```cpp
+struct object_model {
+    int                    object_prio;
+    shapes::shape_model    shape;
+    medium::medium_model   medium;
+    utility::sdf           sdf_model;
+};
+```
+
+**What's missing:**
+- Actions (no `ChangeObject` equivalent yet)
+- Reducer / `update()` function
+- `compute_sdf(dx)` — call `shape`'s `generate()`, store result in `sdf_model`
+- `compute_voxels(dx)` — walk `sdf_model`, write voxels where distance < 0
+- The computed voxel cache (`immer::flex_vector<Voxel>`) is not yet on the struct
+- `dx` tracking field not yet on the struct
+
+**Divergences from design:**
+- `object_prio` lives directly on `object_model`; design put priority on `medium`
+- No distinction between authored and computed data yet
+
+---
+
+### `object.hpp` (root-level, `src/space/object.hpp`) — Stale, should be removed
+
+An older flat `object_model` struct still exists at `src/space/object.hpp` in the same
+`space::object` namespace as the new `object/object.hpp`. It uses `immer::vector` for
+`distances` and `normals` (design specified plain `std::vector`), has an empty `actions`
+namespace, and predates the shape descriptor system. It conflicts with the newer version
+and should be deleted.
+
+---
+
+### `grid.hpp` — Skeleton, same issues as before
+
+The `grid_data` struct and `voxel` exist. No actions, no reducer, no methods.
+
+**Structural divergences still to fix:**
 
 | Design | Implementation |
 |---|---|
 | `origin` as typed world-space coordinate | `std::vector<int> origin` |
-| `physical_dimensions` (width, height, depth) | `single_axis_d: double` — implies cubic grid only |
+| Rectangular `physical_dimensions` (w × h × d) | `single_axis_d: double` — cubic only |
 | `dx` — cell size in meters (`double`) | `cell_size: int` |
 | `nx, ny, nz` derived cell counts | Not present |
-| `resolution = physical_size / dx` | `resolution = cell_size * single_axis_d` — inverted semantics |
-
-The design treats `dx` as a small cell size from which the total cell count is derived. The implementation's `resolution` field is `cell_size × single_axis_d`, making it a large number with different semantics.
-
-The assumption of `single_axis_d` for all axes means the grid is implicitly cubic. The design specified a rectangular grid with independent width, height, and depth.
+| `resolution = physical_size / dx` | `resolution = cell_size * single_axis_d` — inverted |
 
 **Methods not yet implemented:** `index_to_position`, `position_to_index`, `is_in_bounds`, `query`.
-
----
-
-### `object` — Major Structural Divergence
-
-The design specified a **virtual base class hierarchy** with `Object` as an interface and `Sphere`, `Box`, and `MeshObject` as concrete subtypes. `contains()` and `stamp_onto()` were to be the core virtual interface.
-
-The implementation uses a **single flat struct** `object_model` with no virtual dispatch. More significantly, the SDF data (`distances`, `normals`) is baked directly into `object_model` rather than living in a separate `SDF` type. This collapses the intended three-layer design (`sdf.hpp` + `mesh_object.hpp` + `object.hpp`) into one struct.
-
-The `distances` and `normals` fields use `immer::vector` — the design specified plain `std::vector` for SDF data since it is recomputed wholesale and does not benefit from structural sharing.
-
-No `contains()` or `stamp_onto()` logic is implemented yet. The `actions` namespace is present but empty.
-
----
-
-### `spacial_nav.hpp` — New Addition
-
-Not in the original design. Defines three shared descriptor types under `space::descriptor`:
-
-- `position` — `{x, y, z}` doubles for world-space coordinates
-- `vec_position` — `{i, j, k}` doubles for vectors and normals
-- `cell_quantity` — `{x, y, z}` as `uint16_t` for grid cell counts
-
-This provides the shared coordinate vocabulary used by `grid.hpp` and `object.hpp`. It is a sensible addition that consolidates types the design left scattered or implicit.
 
 ---
 
@@ -84,12 +149,30 @@ This provides the shared coordinate vocabulary used by `grid.hpp` and `object.hp
 
 | Area | Design Intent | Actual Implementation |
 |---|---|---|
-| `acoustic_impedance` | Derived free function | Stored field, recomputed on change |
 | `speed_of_sound` | Stored explicitly | Derived from `stiffness`; cannot be set directly |
-| `stiffness` | Not in design | Added as new field; drives speed derivation |
-| Grid dimensions | Rectangular (`width × height × depth`) | Implicitly cubic (`single_axis_d`) |
-| Grid `dx` | `double`, fine cell size | `int cell_size`, semantics differ |
-| Grid methods | Four methods marked highest priority | None implemented |
-| Object hierarchy | Virtual base + Sphere/Box/Mesh subtypes | Single flat `object_model` struct |
-| SDF | Separate `SDF` type in `sdf.hpp` | Absorbed into `object_model` directly |
-| Coordinate utilities | Implicit / part of `coords/` layer | Centralised in new `spacial_nav.hpp` |
+| `acoustic_impedance` | Free function | Stored field, recomputed on change |
+| Coordinate namespace | `space::descriptor` | `space::utility` |
+| Coordinate type names | `position`/`vec_position` | `point3`/`vector3` |
+| `sdf` struct home | Separate `sdf.hpp` | Lives in `spacial_nav.hpp` |
+| Shape type naming | `box_model` | `cube_model` |
+| Rotation | Deferred | Present on `cube_model` now |
+| Object priority | On `medium` | Direct field on `object_model` |
+| Grid dimensions | Rectangular | Implicitly cubic |
+| Grid `dx` | `double` | `int cell_size` |
+| Grid methods | Four highest-priority methods | None implemented |
+| Voxel cache on object | `immer::flex_vector<Voxel>` | Not yet on struct |
+
+---
+
+## Current Development Focus
+
+Shape SDF generation is done. The immediate next work is completing `object_model`:
+
+### Immediate Priorities
+1. **Remove stale `src/space/object.hpp`** — the old flat struct conflicts with the new layout
+2. **Add voxel cache + `dx` to `object_model`** — `immer::flex_vector<voxel>` and `double dx`
+3. **Implement `compute_sdf(dx)`** — call `shape`'s `generate()`, store into `sdf_model`
+4. **Implement `compute_voxels(dx)`** — walk sdf, populate voxel cache (use immer transient for batch writes)
+5. **Add object actions + `update()` reducer** — `ChangeObject` triggering the two-stage recompute
+6. **Fix `grid.hpp`** — origin type, rectangular dimensions, `dx` as double, resolution semantics
+7. **Implement grid methods** — `index_to_position`, `position_to_index`, `is_in_bounds`, `query`

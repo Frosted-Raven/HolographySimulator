@@ -1,4 +1,4 @@
-# Acoustic Holography Physics Engine — Project Context
+# Acoustic Holography Engine — Project Context
 
 ## Project Goal
 Build a 3D acoustic physics engine to simulate and test acoustic holography concepts. The engine is a **testing tool for theoretical ideas**, not a real-time application. The primary output is a computed 3D pressure field that can be visualized and analyzed.
@@ -23,6 +23,9 @@ Actions → Reducer → Model → View (GUI)
 - GUI only reads state and dispatches actions, never touches physics directly
 - Physics logic lives in pure functions (the reducer and solver)
 
+**Key Lager action flow for objects:**
+A `ChangeObject` action triggers a two stage recomputation effect. If authored data changes, both SDF and voxels are recomputed. If only dx changes, only voxels are recomputed. The rest of the scene is untouched.
+
 ---
 
 ## File Structure
@@ -30,36 +33,30 @@ Actions → Reducer → Model → View (GUI)
 acoustic_engine/
 │
 ├── src/
-│   ├── model/
+│   ├── space/
+│   │   ├── medium.hpp/cpp            # Acoustic medium — used for both space and barriers
 │   │   ├── grid.hpp                  # 3D spatial grid
-│   │   ├── medium.hpp                # Acoustic medium — used for both space and barriers
-│   │   ├── voxel.hpp                 # Voxel struct
 │   │   ├── space.hpp                 # Top-level spatial definition
 │   │   ├── objects/
-│   │   │   ├── object.hpp            # Base object interface
-│   │   │   ├── sphere.hpp
-│   │   │   ├── box.hpp
-│   │   │   └── mesh_object.hpp       # Arbitrary mesh via SDF
-│   │   ├── sdf.hpp                   # Signed Distance Field type
-│   │   ├── transducer.hpp
-│   │   ├── transducer_array.hpp
-│   │   ├── pressure_field.hpp
-│   │   ├── simulation_state.hpp
-│   │   └── simulation_model.hpp      # Top-level Lager model
+│   │   │   ├── sdf_model.hpp         # Abstract base — world_position, scale, virtual generate()
+│   │   │   ├── sphere_model.hpp/cpp  # Sphere SDF generation
+│   │   │   ├── box_model.hpp/cpp     # Box SDF generation
+│   │   │   └── object.hpp            # Object — authored data + computed SDF + voxels
+│   │   └── utility/
+│   │       └── spacial_nav.hpp       # Shared coordinate vocabulary
 │   │
+│   ├── transducer.hpp
+│   ├── transducer_array.hpp
+│   ├── pressure_field.hpp
+│   ├── simulation_state.hpp
+│   ├── simulation_model.hpp          # Top-level Lager model
 │   ├── actions.hpp                   # All action types + std::variant
 │   │
 │   ├── physics/
 │   │   ├── wave_solver.hpp/cpp       # Core solver interface
 │   │   └── helmholtz_solver.hpp/cpp  # Frequency domain implementation
 │   │
-│   ├── coords/
-│   │   └── coord_transform.hpp       # Cartesian <-> Spherical utilities
-│   │
 │   └── reducer.hpp/cpp               # Pure update() function
-│
-├── io/                               # File loading layer
-│   └── mesh_loader.hpp/cpp           # Loads 3D files via assimp, generates SDF
 │
 ├── gui/
 │   ├── views/
@@ -80,99 +77,182 @@ acoustic_engine/
 ## Core Model Hierarchy
 ```
 SimulationModel
-├── Space                          # Static environment definition
-│   ├── Grid                       # Voxel space
-│   │   ├── default_medium         # Baseline Medium (air etc.)
-│   │   └── immer::flex_vector<Voxel>  # Only non-default voxels
-│   ├── Objects []                 # immer::vector — barriers and obstacles
-│   │   ├── Sphere + Medium
-│   │   └── Box + Medium
+├── Space                                  # Static environment definition
+│   ├── Grid                               # Spatial definition + query interface
+│   │   └── default_medium                 # Baseline Medium (air etc.)
+│   ├── Objects []                         # immer::vector of Objects
+│   │   └── Object
+│   │       ├── medium                     # Acoustic properties + priority
+│   │       ├── sdf_model*                 # Pointer to shape (sphere, box etc.)
+│   │       ├── generator_type             # Enum for serialization (sphere, box)
+│   │       ├── sdf                        # Computed — distances + normals
+│   │       ├── immer::flex_vector<Voxel>  # Computed — sampled from SDF at dx
+│   │       └── dx                         # Resolution voxels were computed at
 │   └── TransducerArray
-│       └── Transducers []         # immer::vector
+│       └── Transducers []                 # immer::vector
 │
-└── SimulationState                # Dynamic solver output
-    ├── PressureField              # plain std::vector internally
+└── SimulationState                        # Dynamic solver output
+    ├── PressureField                      # plain std::vector internally
     └── Solver settings
 ```
 
-**Key principle:** Space is static geometry. SimulationState is the computed result of running the solver against a Space. They are explicitly separate so the space can be modified without running the solver, and the solver can be rerun with different settings without redefining the space.
+**Key principles:**
+- Space is static geometry. SimulationState is the computed result of running the solver against a Space. They are explicitly separate.
+- An Object has two kinds of data — authored (medium, sdf_model, generator_type) and computed (sdf, voxels, dx). Computed data is always derived from authored data and should never be set directly.
+- The two stage computation: authored data changes → recompute SDF → recompute voxels. dx change only → skip SDF, recompute voxels only.
+- Grid does not own voxels — it is a spatial definition and query interface. Voxels live on Objects.
 
 ---
 
 ## Component Definitions
 
 ### `medium.hpp`
-Single struct describing acoustic properties of any matter — used for both the propagation medium (air, water etc.) and barriers (plastic, felt etc.). Material is no longer a separate type.
+Single struct describing acoustic properties of any matter — used for both the propagation medium (air, water etc.) and barriers (plastic, felt etc.). There is no separate Material type.
 
 ```cpp
-struct Medium {
-    double temperature;              // °C
-    double density;                  // ρ — kg/m³
-    double speed_of_sound;           // c — m/s (stored explicitly, not derived, to support non-air media)
-    double absorption_coefficient;   // α — energy loss over distance
-    bool   is_rigid = false;         // true for hard boundaries, simplifies solver math
-    int    priority = 0;             // higher priority wins when two objects stamp the same voxel
+struct medium_model {
+    std::string name;                   // optional, useful for presets
+    double      temperature;            // °C
+    double      density;                // ρ — kg/m³
+    double      stiffness;              // bulk modulus — speed of sound derived from this
+    double      acoustic_impedance;     // stored for performance, kept in sync with ρ and c
+    double      absorption_coefficient; // α — energy loss over distance
+    bool        is_rigid = false;       // true for hard boundaries, simplifies solver math
+    int         priority = 0;           // higher priority wins when two objects occupy the same voxel
 };
 ```
 
-**Derived quantities** — computed as free functions, not stored:
-- `acoustic_impedance(medium)` → `ρ × c`
+**Speed of sound** is derived from stiffness and density: `c = sqrt(stiffness / density)`. It is not stored directly. This is physically sounder than storing speed explicitly — stiffness is a genuine material property that works universally across all media.
+
+**Derived quantities computed as free functions** (require both sides of a boundary, calculated at solve time):
+- `speed_of_sound(medium)` → `sqrt(stiffness / density)`
 - `reflection_coefficient(medium_a, medium_b)` → `(Z_a - Z_b) / (Z_a + Z_b)`
 - `transmission_coefficient(medium_a, medium_b)` → `1 - R`
 
-Reflection and transmission require both sides of a boundary so they can't be precomputed — they are calculated at solve time as free functions in the physics layer.
-
 **Named constructors** for convenience:
 ```cpp
-static Medium air(double temperature_celsius);
+static medium_model air(double temperature_celsius);
 // others (water, tissue etc.) added as needed
 ```
 
-### `voxel.hpp`
-A cell in the grid that differs from the default. Only non-default voxels are stored — the vast majority of open space is represented implicitly by the grid's default Medium.
+---
+
+### `objects/sdf_model.hpp`
+Abstract base for all shape types. Defines the shared authored data and the pure virtual generation interface:
 
 ```cpp
-struct Voxel {
-    int i, j, k;                    // grid index
-    std::optional<Medium> medium;   // present if this voxel overrides the default medium
-                                    // is_rigid = true inside Medium indicates a barrier
+struct sdf_model {
+    space::descriptor::position world_position;
+    double scale;
+
+    virtual SDF generate(double dx) = 0;
 };
 ```
 
-A Voxel exists in the grid's flex_vector only if its Medium differs from the default. The presence of a Medium with `is_rigid = true` is what identifies a barrier voxel.
+Rotation is deferred — to be added later without restructuring.
+
+---
+
+### SDF struct
+The computed output of a generator. Stored on Object, produced by `sdf_model::generate()`:
+
+```cpp
+struct SDF {
+    std::vector<double>                          distances;  // flat 1D, negative inside positive outside
+    std::vector<space::descriptor::vec_position> normals;    // flat 1D, one per cell
+    space::descriptor::position                  origin;     // world space corner of coverage
+    space::descriptor::vec_position              dimensions; // physical size of coverage in meters
+};
+```
+
+nx, ny, nz are derived at query time from dimensions and dx — not stored. The SDF has no resolution of its own, it uses whatever dx the grid provides.
+
+---
+
+### `objects/sphere_model.hpp`
+Extends `sdf_model`. No additional authored data beyond `world_position` and `scale` (scale = radius).
+
+`generate(dx)` — analytical SDF generation:
+```
+for each cell in bounding box (2×radius on each side):
+    d = length(cell_center - world_position) - radius
+    normal = normalize(cell_center - world_position)
+    store d and normal
+```
+
+---
+
+### `objects/box_model.hpp`
+Extends `sdf_model`. Adds `dimensions` (width, height, depth). Rotation deferred to later.
+
+`generate(dx)` — analytical SDF generation using standard box SDF formula:
+```
+for each cell in bounding box:
+    transform cell into box local space
+    q = abs(local) - (dimensions / 2)
+    d = length(max(q, 0)) + min(max(q.x, q.y, q.z), 0)
+    normal = outward face normal of nearest face
+    store d and normal
+```
+
+---
+
+### `objects/object.hpp`
+Owns both authored and computed data. Voxel computation lives here as a method.
+
+**Authored data:**
+- `medium` — acoustic properties and priority
+- `sdf_model*` — pointer to shape (sphere_model or box_model)
+- `generator_type` — enum (sphere, box) for serialization
+
+**Computed data:**
+- `sdf` — generated by calling `sdf_model->generate(dx)`
+- `immer::flex_vector<Voxel>` — sampled from SDF at grid's dx
+- `dx` — resolution voxels were computed at
+
+**Methods:**
+- `compute_sdf(dx)` — calls `sdf_model->generate(dx)`, stores result
+- `compute_voxels(dx)` — walks SDF, writes Voxels where distance < 0, respects priority
+- `update(dx)` — orchestrates both stages, checks what needs recomputing
+
+---
 
 ### `grid.hpp`
-The 3D voxel space. Purely Cartesian. Knows nothing about waves:
-- `origin` — (x,y,z) of grid corner in world space
-- `physical_dimensions` — width, height, depth in meters
-- `dx` — uniform cell size in meters (constrained by wavelength: dx ≤ λ/10)
-- `nx, ny, nz` — derived cell counts (physical_size / dx)
+The spatial definition of the simulation space. Purely Cartesian. Does **not** own voxels — voxels live on Objects. Grid is a spatial definition and query interface only.
+
+- `origin` — world space corner using `space::descriptor::position`
+- `physical_dimensions` — width, height, depth in meters (rectangular, not cubic)
+- `dx` — uniform cell size in meters (constrained by wavelength: `dx ≤ λ/10`)
+- `nx, ny, nz` — derived cell counts (`physical_size / dx`)
 - `default_medium` — the baseline Medium filling the space (e.g. air)
-- `immer::flex_vector<Voxel>` — only non-default voxels stored here
 
 **Methods:**
 - `index_to_position(i,j,k)` → physical (x,y,z) of cell center
 - `position_to_index(x,y,z)` → nearest (i,j,k)
 - `is_in_bounds(i,j,k)` → bool
-- `query(i,j,k)` → Voxel — returns stored voxel if present, otherwise a default voxel constructed from default_medium
+- `query(i,j,k)` → Voxel — checks all Objects for a voxel at this index respecting priority, falls back to default medium if none found
 
-**Implementation note:** `flex_vector` is used over `vector` because voxels are added and removed as objects are stamped onto and removed from the grid — `flex_vector` supports efficient insertion and removal where `vector` does not.
+**Current implementation divergences to fix:**
+- `origin` is currently `std::vector<int>` — should use `space::descriptor::position`
+- Grid is currently implicitly cubic via `single_axis_d` — should support independent width/height/depth
+- `cell_size` is currently `int` — should be `double dx`
+- `resolution` semantics are currently inverted
+- Grid methods not yet implemented
 
-### `objects/object.hpp`
-Base interface for all physical objects in the space:
-- `medium` — instance of Medium describing the object's acoustic properties. `is_rigid = true` for hard barriers
-- `position` — Cartesian (x,y,z) world space reference point
-- `contains(x,y,z)` → bool — pure virtual, core geometric query
-- `stamp_onto(grid)` — walks grid voxels, calls contains(), writes a Voxel with this object's Medium into the grid's flex_vector. Should use bounding box optimization to avoid testing every voxel.
+---
 
-### `objects/sphere.hpp`
-- `radius` — meters
-- `contains(x,y,z)`: `sqrt((x-cx)² + (y-cy)² + (z-cz)²) <= radius`
+### `utility/spacial_nav.hpp`
+Defines shared coordinate descriptor types used across grid and objects:
 
-### `objects/box.hpp`
-- `dimensions` — width, height, depth in meters
-- `orientation` — axis-aligned to start, rotation optional later
-- `contains(x,y,z)` — bounds check on all three axes
+```cpp
+namespace space::descriptor {
+    struct position      { double x, y, z; };    // world-space coordinates
+    struct vec_position  { double i, j, k; };    // vectors, normals, dimensions
+    struct cell_quantity { uint16_t x, y, z; };  // grid cell counts
+}
+```
+
+---
 
 ### `transducer.hpp`
 A single wave emitter:
@@ -190,9 +270,9 @@ A single wave emitter:
 
 ### `pressure_field.hpp`
 Computed solver output — separate from grid because it changes every solve:
-- 3D array of **complex values** (need magnitude and phase per voxel)
+- 3D array of **complex values** (need magnitude and phase per voxel) — plain `std::vector`
 - Dimensions matching the grid
-- Metadata: solver settings and Space reference used to produce it
+- Metadata: solver settings and Space configuration used to produce it
 - `magnitude_at(i,j,k)` → |p|
 - `phase_at(i,j,k)` → phase angle
 - `intensity_at(i,j,k)` → |p|² / (2ρc)
@@ -212,63 +292,21 @@ struct SimulationModel {
 ## Immer Usage Guide
 
 ### Where To Use Immer
-- **`immer::flex_vector<Voxel>`** — non-default voxels in Grid. flex_vector chosen over vector because voxels are added and removed as objects are stamped/unstamped, requiring efficient insertion and removal
-- **`immer::vector<Transducer>`** — transducer list in TransducerArray. Adding, removing, or modifying a single transducer shares all unchanged transducers with the previous state
-- **`immer::vector<Object>`** — object/barrier list in Space, same benefit
-- **`immer::map`** — good candidate for a medium presets library when that gets added
+- **`immer::vector<Object>`** — object list in Space. Structural sharing means modifying one object doesn't copy the others
+- **`immer::flex_vector<Voxel>`** — cached voxels inside each Object. flex_vector chosen because voxels are added and removed during recalculation, requiring efficient insertion and removal
+- **`immer::vector<Transducer>`** — transducer list in TransducerArray
 
 ### Where NOT To Use Immer
-The pressure field is recomputed wholesale every solver run — structural sharing provides no benefit when everything changes at once. Use plain `std::vector` for:
-- The complex pressure values in PressureField
+These are recomputed wholesale — structural sharing provides no benefit:
+- SDF distances and normals — use plain `std::vector`
+- Complex pressure values in PressureField — use plain `std::vector`
 
 ### Transients
-Immer provides transients — a way to perform batch mutations efficiently before converting back to an immutable structure. Useful during `stamp_onto()` when an object is writing many voxels into the grid's flex_vector in sequence. Convert to transient, stamp all voxels, then convert back.
-
-### `sdf.hpp`
-A 3D grid of distance values precomputed from a mesh. Negative inside the mesh, positive outside:
-```cpp
-struct SDF {
-    std::vector<double> distances;   // negative inside, positive outside
-    std::vector<Vec3>   normals;     // surface normal at each cell
-    Vec3    origin;
-    double  dx;                      // should match simulation grid dx
-    int     nx, ny, nz;
-
-    double  distance_at(Vec3 point) const;
-    Vec3    normal_at(Vec3 point) const;
-    bool    contains(Vec3 point) const;  // distance < 0
-};
-```
-Surface normals are stored because they are needed for accurate reflection calculations — a capability ray casting and voxelization don't provide as cleanly.
-
-### `objects/mesh_object.hpp`
-Extends Object for arbitrary mesh geometry. Internally uses an SDF for efficient spatial queries:
-```cpp
-struct MeshObject : public Object {
-    SDF sdf;
-
-    bool contains(double x, double y, double z) const override {
-        return sdf.contains({x, y, z});
-    }
-};
-```
-
-### `io/mesh_loader.hpp`
-Loads 3D mesh files via assimp and produces a MeshObject ready to place in the scene:
-```cpp
-namespace io {
-    MeshObject load_mesh(
-        const std::string& filepath,   // any format assimp supports (.obj, .stl, .ply etc.)
-        const Medium&      medium,     // acoustic properties to stamp
-        double             dx          // SDF resolution — match simulation grid dx
-    );
-}
-```
-The loader parses the file, generates the SDF from the resulting mesh, and returns a fully formed MeshObject. The rest of the engine sees it as just another Object.
+Immer transients allow efficient batch mutations before converting back to an immutable structure. Useful during `compute_voxels()` when many voxels are being written at once — convert to transient, write all voxels, convert back.
 
 ---
 
-
+## Coordinate System
 **Dual coordinate approach:**
 - **Cartesian** — the grid, pressure field, object positions, and visualization all live here permanently
 - **Spherical** — used per-transducer inside the wave solver to compute each source's contribution naturally
@@ -329,14 +367,15 @@ Total field is superposition of all sources:
 5. **Export/measurement layer** — for extracting data outside the GUI
 6. **Scene/Scenario concept** — for comparing multiple Space configurations
 7. **Composite objects** — layered media, complex shapes
+8. **Rotation** — deferred, to be added to sdf_model without restructuring
 
 ---
 
 ## Current Development Focus
-**Space layer only** — specifically `grid.hpp` and its supporting types. SimulationState and the solver are not being implemented yet.
+`medium` and `sphere_model`/`box_model` are implemented. `object.hpp` is next — specifically `compute_voxels()` and the two stage update trigger. Then grid fixes before moving to the solver.
 
-### Grid Implementation Priorities
-1. Get the flat array data layout right first
-2. Ensure `index_to_position` and `position_to_index` are airtight — everything depends on these
-3. Bounding box optimization in `stamp_onto` before tackling large grids
-4. dx constraint documentation: dx must satisfy `dx ≤ λ/10` for target frequency
+### Immediate Priorities
+1. Implement `object.hpp` — compute_sdf, compute_voxels, update
+2. Fix grid semantic issues (origin type, cubic assumption, dx as double, resolution semantics)
+3. Implement grid methods — `index_to_position`, `position_to_index`, `is_in_bounds`, `query`
+4. Move to transducer and solver layer
