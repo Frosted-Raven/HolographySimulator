@@ -7,6 +7,8 @@
 
 #include <immer/map.hpp>
 #include <immer/flex_vector.hpp>
+#include <lager/util.hpp>
+#include <lager/context.hpp>
 
 #include <algorithm>
 #include <vector>

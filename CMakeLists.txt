@@ -75,6 +75,7 @@ add_executable(holo
   src/space/grid.cpp
   src/transducer/transducer.cpp
   src/transducer/transducer_array.cpp
+  src/world.cpp
 )
 
 target_include_directories(holo
