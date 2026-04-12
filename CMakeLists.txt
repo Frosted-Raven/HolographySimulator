@@ -66,6 +66,56 @@ add_versioned_package(
   )  
 
 
+find_package(OpenGL REQUIRED)
+
+CPMAddPackage(
+  NAME glfw
+  GITHUB_REPOSITORY "glfw/glfw"
+  GIT_TAG "3.4"
+  OPTIONS
+    "GLFW_BUILD_TESTS OFF"
+    "GLFW_BUILD_EXAMPLES OFF"
+    "GLFW_BUILD_DOCS OFF"
+    "GLFW_INSTALL OFF"
+    "GLFW_BUILD_WAYLAND OFF"
+    "GLFW_BUILD_X11 ON"
+)
+
+CPMAddPackage(
+  NAME glad
+  GITHUB_REPOSITORY "Dav1dde/glad"
+  GIT_TAG "v0.1.36"
+  OPTIONS
+    "GLAD_PROFILE \"core\""
+    "GLAD_API \"gl=3.3\""
+    "GLAD_GENERATOR \"c\""
+    "GLAD_INSTALL OFF"
+)
+
+CPMAddPackage(
+  NAME imgui
+  GITHUB_REPOSITORY "ocornut/imgui"
+  GIT_TAG "v1.91.6"
+  DOWNLOAD_ONLY YES
+)
+
+if(imgui_ADDED)
+  add_library(imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+  )
+  target_include_directories(imgui PUBLIC
+    ${imgui_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}/backends
+  )
+  target_compile_definitions(imgui PUBLIC IMGUI_IMPL_OPENGL_LOADER_GLAD)
+  target_link_libraries(imgui PUBLIC glfw OpenGL::GL glad)
+endif()
+
 add_executable(holo
   src/main.cpp
   src/space/medium.cpp
@@ -76,6 +126,7 @@ add_executable(holo
   src/transducer/transducer.cpp
   src/transducer/transducer_array.cpp
   src/world.cpp
+  src/gui/app.cpp
 )
 
 target_include_directories(holo
@@ -92,4 +143,8 @@ target_link_libraries_system(holo
   lager
   immer
   zug
+  imgui
+  glfw
+  OpenGL::GL
+  glad
 )

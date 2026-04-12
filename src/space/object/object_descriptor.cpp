@@ -18,7 +18,9 @@ namespace space::object::shapes{
         };
 
         double diameter = scale * 2;
-        uint16_t cell_count = static_cast<uint16_t>(diameter / cell_size);
+        int cell_count_raw = static_cast<int>(diameter / cell_size);
+        if (cell_count_raw > 512) cell_count_raw = 512; // guard against absurd allocations
+        uint16_t cell_count = static_cast<uint16_t>(cell_count_raw);
 
         utility::sdf sdf_data;
         sdf_data.origin = origin;
@@ -69,10 +71,14 @@ namespace space::object::shapes{
             world_position.z - (scale.k / 2)
         };
 
+        auto clamp_cells = [](double dim, double cs) -> uint16_t {
+            int n = static_cast<int>(dim / cs);
+            return static_cast<uint16_t>(n > 512 ? 512 : n);
+        };
         utility::cell_quantity cell_count = {
-            static_cast<uint16_t>(scale.i / cell_size),
-            static_cast<uint16_t>(scale.j / cell_size),
-            static_cast<uint16_t>(scale.k / cell_size)
+            clamp_cells(scale.i, cell_size),
+            clamp_cells(scale.j, cell_size),
+            clamp_cells(scale.k, cell_size)
         };
 
         utility::sdf sdf_data;

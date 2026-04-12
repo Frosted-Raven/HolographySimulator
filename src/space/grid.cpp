@@ -97,7 +97,7 @@ namespace space::grid{
             [&](action::new_sphere a){
                 object::shapes::sphere_model sphere = {
                     origin,
-                    1.0,
+                    0.030, // 30 mm radius — 10 cells at default 3 mm cell size
                 };
 
                 object::object_model sphere_object = {
@@ -119,7 +119,7 @@ namespace space::grid{
             [&](action::new_cube a){
                  object::shapes::cube_model cube = {
                      origin,
-                     utility::vector3{1.0, 1.0, 1.0},
+                     utility::vector3{0.030, 0.030, 0.030}, // 30 mm cube
                      utility::vector3{0.0, 0.0, 0.0},
                  };
 
