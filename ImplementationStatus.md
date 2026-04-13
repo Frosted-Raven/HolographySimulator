@@ -1,49 +1,34 @@
 # Acoustic Holography Engine — Implementation Status
 
-## Actual File Structure
+## File Structure
 
 ```
 src/
-├── main.cpp                               # Empty stub
-├── transducer/
-│   ├── transducer.hpp / transducer.cpp    # Complete
-│   └── transducer_array.hpp / .cpp        # Complete
-└── space/
-    ├── medium.hpp / medium.cpp            # Complete
-    ├── grid.hpp / grid.cpp                # Complete
-    ├── object/
-    │   ├── object.hpp / object.cpp        # Complete
-    │   └── object_descriptor.hpp / .cpp   # Complete
-    └── utility/
-        └── spacial_nav.hpp / .cpp         # Complete
+├── main.cpp
+├── world.hpp / world.cpp
+├── simulation_model.hpp / simulation_model.cpp
+├── simulation/
+│   └── simulation_state.hpp / simulation_state.cpp
+├── space/
+│   ├── medium.hpp / medium.cpp
+│   ├── grid.hpp / grid.cpp
+│   ├── object/
+│   │   ├── object.hpp / object.cpp
+│   │   └── object_descriptor.hpp / object_descriptor.cpp
+│   └── utility/
+│       └── spacial_nav.hpp / spacial_nav.cpp
+└── transducer/
+    ├── transducer.hpp / transducer.cpp
+    └── transducer_array.hpp / transducer_array.cpp
 ```
-
-Everything else — `space.hpp`, `simulation_state.hpp`, `simulation_model.hpp`,
-`pressure_field.hpp`, `physics/`, `gui/` — does not exist yet.
-
-The project builds cleanly with clang-18 / libc++.
 
 ---
 
 ## Component Detail
 
-### `medium` — Complete
-
-Full action/reducer pattern implemented. `lager::match` dispatches over the `actions` variant
-for all property changes. `sound_speed` and `acoustic_impedance` are recomputed inside the
-relevant action handlers when their dependencies change.
-
-**Divergences from design:**
-- `stiffness: double` added as an explicit field; `sound_speed` is always derived via
-  `sqrt(stiffness / density)` rather than being stored directly
-- `acoustic_impedance` is stored as a field and kept in sync, rather than being a free
-  function computed on demand
-
----
-
 ### `utility/spacial_nav.hpp/.cpp` — Complete
 
-Defines shared coordinate types, the `sdf` struct, and grid utility functions under `space::utility`.
+Shared coordinate types, the `sdf` struct, and grid utility functions under `space::utility`.
 
 ```cpp
 namespace space::utility {
@@ -73,11 +58,24 @@ namespace space::utility {
 // std::hash<cell_point> specialisation — required for immer::map keying
 ```
 
-**Divergences from design:**
-- Namespace is `space::utility`, not `space::descriptor`
-- Types are named `point3`/`vector3`, not `position`/`vec_position`
-- `sdf` lives here rather than in a dedicated `sdf.hpp`
-- Grid utility functions live here rather than in a `coords/` layer
+---
+
+### `medium.hpp/.cpp` — Complete
+
+Full action/reducer pattern implemented. `sound_speed` and `acoustic_impedance` are
+recomputed inside the relevant action handlers when their dependencies change.
+
+**`medium_model` fields:**
+- `name: std::string`, `priority: uint8_t`
+- `sound_speed: double`, `acoustic_impedance: double` — derived, kept in sync
+- `density: double`, `absorption: double`, `temperature: double`, `stiffness: double`
+- `is_rigid: bool` — blocks pressure propagation in the solver
+
+**`update()` reducer** — `lager::match` over 8 action types.
+
+**Divergences:**
+- `stiffness` is an explicit field; `sound_speed` is always derived via `sqrt(stiffness / density)`
+- `acoustic_impedance` is stored and kept in sync rather than computed on demand
 
 ---
 
@@ -95,12 +93,8 @@ and outward normal per cell.
 
 **`cube_model::generate(cell_size)`** — analytical box SDF; axis-aligned face normals.
 
-**`update(shape_model, actions)` reducer** — `lager::match` over 5 action types:
+**`update()` reducer** — `lager::match` over 5 action types:
 `new_sphere`, `new_cube`, `edit_position`, `edit_sphere`, `edit_cube`.
-
-**Divergences from design:**
-- Shape type is `cube_model`, not `box_model`
-- `cube_model` includes `rotation: vector3` — design deferred rotation
 
 ---
 
@@ -112,7 +106,7 @@ Full action/reducer pattern implemented.
 - `object_prio: int` — priority for voxel conflict resolution
 - `name: std::string`
 - `transform_mod: cell_point` — grid-space offset applied during volume generation
-- `medium: medium_model` — acoustic properties
+- `medium: medium_model` — acoustic properties assigned to this object's voxels
 - `shape: shape_model` — variant holding sphere or cube authored data
 - `sdf_data: utility::sdf` — computed signed distance field
 - `volume: immer::map<cell_point, vector3>` — computed voxel map (position → normal)
@@ -120,14 +114,7 @@ Full action/reducer pattern implemented.
 **`generate_volume(cell_size)`** — walks `sdf_data`, stamps all cells where `distance < 0`
 into `volume` as `cell_point → normal` entries, offset by `transform_mod`.
 
-**`update()` reducer** — `lager::match` over 9 action types: `transform_mod`, `medium`,
-`shape`, `priority`, `name`, `update_sdf`, `update_volume`, plus pass-through to
-`space::medium::update` and `shapes::update` for sub-model actions.
-
-**Divergences from design:**
-- `object_prio` lives directly on `object_model`; design put priority on `medium`
-- `generate_volume` is a mutating method rather than a pure free function
-- Volume stores only normals per voxel — medium is on the object, not per-voxel
+**`update()` reducer** — `lager::match` over 9 action types.
 
 ---
 
@@ -142,25 +129,17 @@ Full action/reducer pattern implemented.
 - `voxels: immer::map<cell_point, voxel_data>` — stamped voxel map
 - `objects: immer::flex_vector<object_model>` — priority-sorted object list
 
-**`voxel_data`** — `{ vector3 normal, medium_model medium }` — the resolved per-cell data
+**`voxel_data`** — `{ vector3 normal, medium_model medium }` — resolved per-cell data
 after stamping.
 
 **`stamp_in()`** — iterates objects in reverse priority order, writes each object's volume
-into a fresh `immer::map`, bounds-checking against the grid. Returns the completed voxel map.
+into a fresh `immer::map`, bounds-checking against the grid.
 
-**`sort_prio()`** — sorts the object list by `object_prio` ascending. Implemented via
-`std::vector` round-trip since `immer::flex_vector` does not provide random-access iterators.
+**`sort_prio()`** — sorts the object list by `object_prio` ascending.
 
 **`update()` reducer** — `lager::match` over 10 action types: `grid_dimensions`, `cell_size`,
 `default_medium_action`, `object_action`, `update_object_volume`, `update_object_sdf`,
 `new_sphere`, `new_cube`, `update_grid`, `sort_objects`.
-
-**Divergences from design:**
-- Grid does not have a world-space `origin` field on the model (origin is a file-scope
-  constant used only when constructing new objects)
-- `stamp_in` is a method on `grid_model` rather than a free function
-- No `position_to_index` / `index_to_position` query interface on the grid itself —
-  those live in `spacial_nav::funcs`
 
 ---
 
@@ -170,20 +149,16 @@ Full action/reducer pattern implemented.
 
 **`single_model` fields:**
 - `name: std::optional<std::string>`
-- `position: space::utility::point3`
+- `position: point3`
 - `frequency: double` — Hz
 - `amplitude: double` — output pressure magnitude
-- `phase: double` — key holography control parameter
+- `phase: double` — primary holography control parameter
 - `is_active: bool`
 
-**`update()` reducer** — `lager::match` over 11 action types. Two categories:
-- **Absolute setters:** `new_transducer` (reset to defaults), `toggle_active`, `new_name`,
-  `new_position`, `new_frequency`, `new_amplitude`, `new_phase`
-- **Relative modifiers:** `mod_position`, `mod_frequency`, `mod_amplitude`, `mod_phase` —
-  add a delta to the current value
-
-`new_position` and `mod_position` use `std::optional` per-axis so individual axes can be
-targeted without affecting others.
+**`update()` reducer** — `lager::match` over 11 action types. Absolute setters
+(`new_position`, `new_frequency`, `new_amplitude`, `new_phase`) and relative modifiers
+(`mod_position`, `mod_frequency`, `mod_amplitude`, `mod_phase`). Position and mod_position
+use `std::optional` per-axis for targeted single-axis edits.
 
 ---
 
@@ -193,44 +168,95 @@ Full action/reducer pattern implemented.
 
 **`tran_array_model` fields:**
 - `name: std::optional<std::string>`
-- `tran_array: immer::vector<single_model>` — persistent list of transducers
+- `tran_array: immer::vector<single_model>`
 
-**`update()` reducer** — `lager::match` over 5 action types:
-- `new_name` — set array name
-- `add_tran` — appends a default-initialised transducer
-- `remove_tran` — removes the last transducer (guarded against empty array)
-- `group_adjust` — applies a `single::actions` to every transducer in the array
-- `single_adjust` — applies a `single::actions` to one transducer by index
+**`update()` reducer** — `lager::match` over 5 action types: `new_name`, `add_tran`,
+`remove_tran`, `group_adjust`, `single_adjust`. `group_adjust` applies a `single::actions`
+to every transducer in the array — covers bulk phase/amplitude changes.
 
-**Divergences from design:**
-- No bulk `set_all_phases` / `set_all_amplitudes` convenience actions — these are covered
-  by `group_adjust` with `new_phase` / `new_amplitude` actions
-- No array geometry description (planar, circular etc.) — not yet added to the model
+---
+
+### `world.hpp/.cpp` — Complete
+
+Top-level domain model combining grid and transducer arrays.
+
+**`world_model` fields:**
+- `grid: grid_model`
+- `transducers: immer::flex_vector<tran_array_model>`
+
+**`update()` reducer** — `lager::match` over 4 action types: `add_array`, `remove_array`,
+`mod_array`, and a pass-through for `space::grid::actions`.
+
+---
+
+### `simulation/simulation_state.hpp/.cpp` — Complete
+
+Pressure field state and forward solver.
+
+**`state_model` fields:**
+- `current: status` — `UNCOMPUTED`, `VALID`, or `OLD`; defaults to `UNCOMPUTED`
+- `pressure: std::vector<std::complex<double>>` — flattened 3D pressure field,
+  indexed as `z * (x*y) + y * x + x`
+
+**`solve(world_model)`** — point-source pressure superposition forward solver.
+For each voxel, resolves the medium (stamped object or grid default), then sums
+complex contributions from all active transducers:
+
+```
+p += (A / r) * exp(-alpha * r) * exp(i * (k*r + phi))
+```
+
+where `k = 2π * f / c` uses the voxel's local sound speed. Rigid voxels are skipped.
+Near-zero `r` is guarded against division by zero.
+
+**`update()` reducer** — 2 action types:
+- `run_solver{world}` — runs `solve()`, writes result into `pressure`
+- `update_status{new_status}` — updates `current` independently (used to mark field `OLD`
+  when the world model changes)
+
+---
+
+### `simulation_model.hpp/.cpp` — Complete
+
+Root model for the engine, combining world state and simulation state.
+
+**`simulation_model` fields:**
+- `world: world_model`
+- `state: state_model`
+
+**`actions`** — `std::variant<world::actions, sim_state::actions>`
+
+**`update()` reducer** — 2 branches:
+- `world::actions` — updates `world`, then marks `state` as `OLD` via `update_status`
+- `sim_state::actions` — updates `state` directly (used to trigger or inject solver results)
+
+Any world edit automatically invalidates the pressure field.
 
 ---
 
 ## Divergence Summary
 
-| Area | Design Intent | Actual Implementation |
+| Area | Design Intent | Actual |
 |---|---|---|
-| `speed_of_sound` | Stored explicitly | Derived from `stiffness` |
+| `sound_speed` | Stored explicitly | Derived from `stiffness` |
 | `acoustic_impedance` | Free function | Stored field, recomputed on change |
-| Coordinate namespace | `space::descriptor` | `space::utility` |
-| Coordinate type names | `position`/`vec_position` | `point3`/`vector3` |
 | `sdf` struct home | Separate `sdf.hpp` | Lives in `spacial_nav.hpp` |
 | Grid utility functions | `coords/` layer | `spacial_nav::funcs` |
 | Shape type naming | `box_model` | `cube_model` |
-| Rotation | Deferred | Present on `cube_model` now |
+| Rotation | Deferred | Present on `cube_model` |
 | Object priority | On `medium` | Direct field on `object_model` |
-| Grid query interface | Methods on `Grid` | Free functions in `spacial_nav::funcs` |
 | Bulk phase/amplitude | Dedicated actions | Covered by `group_adjust` |
 | Array geometry | Described on model | Not yet added |
 
 ---
 
-## Next Priorities
+## Not Yet Implemented
 
-1. `space.hpp` — top-level Space struct combining `grid_model` + `tran_array_model`; actions + reducer
-2. `simulation_model.hpp` + `simulation_state.hpp` — top-level Lager model
-3. `pressure_field.hpp` — complex pressure output; magnitude/phase/intensity accessors
-4. Physics solver — point source superposition over the grid
+- **Pressure field query interface** — magnitude, phase, and intensity accessors over
+  the computed field; slice extraction at arbitrary planes
+- **Inverse solver** — given a target pressure pattern, compute the transducer phases
+  that produce it (the holography problem proper)
+- **Array geometry** — planar, circular, and arbitrary array layout descriptions on
+  `tran_array_model`
+- **Multi-medium ray traversal** — solver currently uses the voxel's local medium;
+  phase accumulation along a ray through multiple media is not yet integrated

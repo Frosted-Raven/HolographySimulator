@@ -126,6 +126,8 @@ add_executable(holo
   src/transducer/transducer.cpp
   src/transducer/transducer_array.cpp
   src/world.cpp
+  src/simulation_model.cpp
+  src/simulation/simulation_state.cpp
   src/gui/app.cpp
 )
 
