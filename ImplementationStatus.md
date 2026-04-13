@@ -8,7 +8,10 @@ src/
 ├── world.hpp / world.cpp
 ├── simulation_model.hpp / simulation_model.cpp
 ├── simulation/
-│   └── simulation_state.hpp / simulation_state.cpp
+│   ├── simulation_state.hpp / simulation_state.cpp
+│   ├── ray_traversal.hpp / ray_traversal.cpp
+│   ├── inverse_solver.hpp / inverse_solver.cpp
+│   └── field_query.hpp / field_query.cpp
 ├── space/
 │   ├── medium.hpp / medium.cpp
 │   ├── grid.hpp / grid.cpp
@@ -189,6 +192,28 @@ Top-level domain model combining grid and transducer arrays.
 
 ---
 
+### `simulation/ray_traversal.hpp/.cpp` — Complete
+
+3D DDA ray traversal through the voxel grid for physically accurate phase and attenuation
+accumulation across multiple media.
+
+**`ray_integral`** — `{ double phase, double attenuation }` — the accumulated integrals
+of `k(x) dx` and `alpha(x) dx` along the ray path, in radians and nepers respectively.
+
+**`traverse(from, to, frequency, grid)`** — public entry point.
+
+**Fast path** — if the ray's bounding box does not overlap any stamped voxel, the ray
+travels entirely through `default_medium` and the result is computed analytically without
+DDA. Keeps homogeneous-space solves as cheap as the original single-medium formula.
+
+**DDA traversal** — operates in voxel-space coordinates. At each step, advances to the
+nearest axis-boundary crossing, computes the chord length through that voxel in metres,
+looks up the medium (`voxels.find` or `default_medium`), and accumulates
+`k * chord` and `alpha * chord`. Voxels outside the grid bounds fall back to
+`default_medium`.
+
+---
+
 ### `simulation/simulation_state.hpp/.cpp` — Complete
 
 Pressure field state and forward solver.
@@ -199,20 +224,68 @@ Pressure field state and forward solver.
   indexed as `z * (x*y) + y * x + x`
 
 **`solve(world_model)`** — point-source pressure superposition forward solver.
-For each voxel, resolves the medium (stamped object or grid default), then sums
-complex contributions from all active transducers:
+For each non-rigid voxel, sums complex contributions from all active transducers:
 
 ```
-p += (A / r) * exp(-alpha * r) * exp(i * (k*r + phi))
+p += (A / r) * exp(-atten_integral) * exp(i * (phase_integral + phi))
 ```
 
-where `k = 2π * f / c` uses the voxel's local sound speed. Rigid voxels are skipped.
-Near-zero `r` is guarded against division by zero.
+Phase and attenuation integrals are computed per-ray by `ray_traversal::traverse`,
+correctly accounting for multiple media along the path.
 
 **`update()` reducer** — 2 action types:
 - `run_solver{world}` — runs `solve()`, writes result into `pressure`
 - `update_status{new_status}` — updates `current` independently (used to mark field `OLD`
   when the world model changes)
+
+---
+
+### `simulation/field_query.hpp/.cpp` — Complete
+
+Read-only accessors over a computed pressure field. No action/reducer — purely functional.
+
+**Point accessors** — all guard against uncomputed state, out-of-bounds coordinates, and
+vector size mismatch before accessing data:
+- `magnitude_at` — `std::abs(pressure[idx])` — acoustic pressure amplitude
+- `phase_at` — `std::arg(pressure[idx])` — wave phase in radians [-π, π]
+- `intensity_at` — `std::norm(pressure[idx])` — proportional to |p|²
+
+**Slice extraction** — `extract_slice(state, dims, axis, index)` pulls a 2D plane from
+the 3D field into a `slice` struct (`data`, `width`, `height`):
+- `XY` at fixed `z` — width=x, height=y
+- `XZ` at fixed `y` — width=x, height=z
+- `YZ` at fixed `x` — width=y, height=z
+
+**Derived slice views** — `magnitude(slice)`, `phase(slice)`, `intensity(slice)` each
+return `std::vector<double>` for direct use in colour mapping.
+
+---
+
+### `simulation/inverse_solver.hpp/.cpp` — Complete
+
+Computes transducer phases and amplitudes that produce a desired pressure pattern at a
+set of target points.
+
+**`target_point`** — `{ point3 position, std::complex<double> desired_pressure }`
+
+**`params`** — `{ method solver_method, int gs_iterations }`. `method` is either
+`backprop` or `gerchberg_saxton`; defaults to GS with 100 iterations.
+
+**`result`** — phases and amplitudes indexed parallel to
+`world.transducers[array_idx][tran_idx]`. Inactive transducers and untouched arrays
+retain their current values.
+
+**Transfer matrix H** — built once per solve. `H[m][n]` is the unit transfer from
+transducer `n` to target `m`, computed via `ray_traversal::traverse` so multi-medium
+paths are handled correctly.
+
+**Tier 1 — Backpropagation** — applies `H^*` (conjugate transpose) to the desired
+pressure vector. Single pass, non-iterative. Good for simple focal point patterns.
+
+**Tier 2 — Gerchberg-Saxton** — iterates between transducer and target planes:
+forward-propagate via `H`, clamp target amplitudes to desired values, back-propagate
+via `H^*`, clamp transducer amplitudes to hardware limits. Converges to a phase
+distribution that approximates the desired pattern across multiple simultaneous targets.
 
 ---
 
@@ -224,11 +297,13 @@ Root model for the engine, combining world state and simulation state.
 - `world: world_model`
 - `state: state_model`
 
-**`actions`** — `std::variant<world::actions, sim_state::actions>`
+**`actions`** — `std::variant<world::actions, sim_state::actions, action::run_inverse>`
 
-**`update()` reducer** — 2 branches:
-- `world::actions` — updates `world`, then marks `state` as `OLD` via `update_status`
-- `sim_state::actions` — updates `state` directly (used to trigger or inject solver results)
+**`update()` reducer** — 3 branches:
+- `world::actions` — updates `world`, marks `state` as `OLD`
+- `sim_state::actions` — updates `state` directly
+- `action::run_inverse{targets, params}` — runs the inverse solver, writes resulting
+  phases and amplitudes back into `world.transducers`, marks `state` as `OLD`
 
 Any world edit automatically invalidates the pressure field.
 
@@ -252,11 +327,7 @@ Any world edit automatically invalidates the pressure field.
 
 ## Not Yet Implemented
 
-- **Pressure field query interface** — magnitude, phase, and intensity accessors over
-  the computed field; slice extraction at arbitrary planes
-- **Inverse solver** — given a target pressure pattern, compute the transducer phases
-  that produce it (the holography problem proper)
 - **Array geometry** — planar, circular, and arbitrary array layout descriptions on
-  `tran_array_model`
-- **Multi-medium ray traversal** — solver currently uses the voxel's local medium;
-  phase accumulation along a ray through multiple media is not yet integrated
+  `tran_array_model`; auto-population of transducer positions from a layout descriptor
+- **Field statistics** — aggregate queries over the pressure field: min/max magnitude,
+  RMS pressure, focal point detection; useful for evaluating inverse solver convergence
