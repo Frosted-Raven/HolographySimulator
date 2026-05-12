@@ -1,5 +1,6 @@
 #include "simulation/simulation_state.hpp"
 
+#include "simulation/ray_traversal.hpp"
 #include "space/grid.hpp"
 #include "space/utility/spacial_nav.hpp"
 
@@ -42,11 +43,12 @@ namespace simulate::sim_state{
 
                             if(r < 1e-10) continue;
 
-                            double k = 2.0 * std::numbers::pi * tran.frequency / med.sound_speed;
+                            auto ray = ray_traversal::traverse(
+                                tran.position, pos, tran.frequency, grid);
 
                             pressure += (tran.amplitude / r)
-                                      * std::exp(-med.absorption * r)
-                                      * std::exp(std::complex<double>{0.0, k * r + tran.phase});
+                                      * std::exp(-ray.attenuation)
+                                      * std::exp(std::complex<double>{0.0, ray.phase + tran.phase});
                         }
                     }
 
@@ -65,6 +67,7 @@ namespace simulate::sim_state{
         return lager::match(std::move(a))(
             [&](action::run_solver a){
                 m.pressure = solve(a.world);
+                m.current  = VALID;
                 return m;
             },
             [&](action::update_status a){
