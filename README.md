@@ -20,3 +20,4 @@ Use `cmake` to setup the build. Preset is available for clang-18
 cmake --preset=clang-18
 ```
 
+### Visit simoncaisse.com to learn more
